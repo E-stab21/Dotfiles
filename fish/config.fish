@@ -1,4 +1,4 @@
-source /usr/share/cachyos-fish-config/cachyos-config.fish
+source /home/ethan/Projects/Dotfiles/fish/cachyos-config.fish
 
 # pyenv: enable only for interactive shells so non-interactive tooling
 # (e.g. package builds) uses system python (/usr/bin/python3).
@@ -22,3 +22,10 @@ source /usr/share/cachyos-fish-config/cachyos-config.fish
 # function fish_greeting
 #    # smth smth
 # end
+
+fish_add_path $HOME/.local/bin
+
+set -gx PYENV_ROOT $HOME/.pyenv
+fish_add_path $PYENV_ROOT/bin
+pyenv init - fish | source
+fish_add_path /home/ethan/Tools/Azure.Functions.Cli.linux-x64.4.12.1

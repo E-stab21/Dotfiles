@@ -1,0 +1,6 @@
+/* Only override zebra-row color. Do not set background-color here:
+   Qt stylesheets that paint QWidget/QGraphicsView backgrounds disable
+   window translucency. */
+QGraphicsView {
+    alternate-background-color: rgba(14, 14, 14, 168);
+}
