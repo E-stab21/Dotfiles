@@ -604,10 +604,21 @@ void BarWindow::flushPendingMenu()
     if (m_pendingMenu == MenuKind::None)
         return;
 
-    QAbstractButton *btn = buttonForMenu(m_pendingMenu);
+    const MenuKind kind = m_pendingMenu;
+    CornerBar *bar = barForMenu(kind);
+
+    if (m_forcePendingOpen) {
+        if (!bar->revealed())
+            return;
+        m_forcePendingOpen = false;
+        m_pendingMenu = MenuKind::None;
+        openMenu(kind);
+        return;
+    }
+
+    QAbstractButton *btn = buttonForMenu(kind);
     // Only open if the pointer is still on that control (or its bar).
-    if (btn && (btn->underMouse() || barForMenu(m_pendingMenu)->revealed())) {
-        const MenuKind kind = m_pendingMenu;
+    if (btn && (btn->underMouse() || bar->revealed())) {
         m_pendingMenu = MenuKind::None;
         // Require the triggering button to still be hovered so a drive-by
         // reveal doesn't pop menus.
@@ -640,6 +651,7 @@ void BarWindow::openMenu(MenuKind kind)
 
     m_openMenu = kind;
     m_pendingMenu = MenuKind::None;
+    m_forcePendingOpen = false;
     syncHoldOpen();
 
     switch (kind) {
@@ -668,6 +680,16 @@ void BarWindow::openMenu(MenuKind kind)
     }
 }
 
+void BarWindow::toggleLauncher()
+{
+    if (m_openMenu == MenuKind::Launcher && m_launcherMenu->isVisible()) {
+        closeMenus();
+        return;
+    }
+    m_forcePendingOpen = true;
+    requestMenu(MenuKind::Launcher);
+}
+
 void BarWindow::closeMenus()
 {
     m_closeTimer->stop();
@@ -677,6 +699,7 @@ void BarWindow::closeMenus()
     m_launcherMenu->hide();
     m_openMenu = MenuKind::None;
     m_pendingMenu = MenuKind::None;
+    m_forcePendingOpen = false;
     syncHoldOpen();
 }
 

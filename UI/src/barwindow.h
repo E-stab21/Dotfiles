@@ -20,6 +20,7 @@ class BarWindow : public QObject
 public:
     explicit BarWindow(QObject *parent = nullptr);
     void show();
+    void toggleLauncher();
 
 private:
     enum class MenuKind { None, Power, Wifi, Bluetooth, Launcher };
@@ -61,4 +62,5 @@ private:
     QTimer *m_closeTimer = nullptr;
     MenuKind m_openMenu = MenuKind::None;
     MenuKind m_pendingMenu = MenuKind::None;
+    bool m_forcePendingOpen = false;
 };

@@ -93,7 +93,10 @@ void HyprlandClient::focusWorkspace(int id)
 
 void HyprlandClient::openLauncher()
 {
-    QProcess::startDetached(QStringLiteral("rofi"), {QStringLiteral("-show"), QStringLiteral("drun")});
+    // Prefer the running hypr-pills instance; fall back to spawning one.
+    if (!QProcess::startDetached(QStringLiteral("hypr-pills"), {QStringLiteral("--launcher")}))
+        QProcess::startDetached(QStringLiteral("/home/ethan/Projects/Dotfiles/UI/build/hypr-pills"),
+                                {QStringLiteral("--launcher")});
 }
 
 void HyprlandClient::connectEventSocket()
