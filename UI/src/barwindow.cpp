@@ -1,36 +1,46 @@
 #include "barwindow.h"
 
 #include "applauncher.h"
+#include "cornerbar.h"
 #include "dropdown.h"
 #include "hyprland.h"
 #include "pill.h"
 #include "statusmonitor.h"
 
-#include <LayerShellQt/Window>
-
 #include <QAbstractButton>
-#include <QCursor>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QPainter>
-#include <QPainterPath>
-#include <QScreen>
-#include <QShowEvent>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QToolButton>
-#include <QWindow>
 
 namespace {
 
-constexpr int kBarHeight = 44;
-constexpr int kPillHeight = 34;
-constexpr int kMarginX = 14;
-constexpr int kMarginTop = 8;
-
-QColor cream(int a = 255)
+QIcon wifiSignalIcon(int signal, bool secure)
 {
-    return QColor(0xe6, 0xd6, 0xcb, a);
+    QString level;
+    if (signal >= 75)
+        level = QStringLiteral("excellent");
+    else if (signal >= 50)
+        level = QStringLiteral("good");
+    else if (signal >= 25)
+        level = QStringLiteral("ok");
+    else if (signal >= 1)
+        level = secure ? QStringLiteral("low") : QStringLiteral("weak");
+    else
+        level = QStringLiteral("none");
+
+    const QString name = secure
+        ? QStringLiteral("network-wireless-secure-signal-%1").arg(level)
+        : QStringLiteral("network-wireless-signal-%1").arg(level);
+    QIcon icon = QIcon::fromTheme(name);
+    if (icon.isNull())
+        icon = QIcon::fromTheme(QStringLiteral("network-wireless-signal-%1").arg(level));
+    if (icon.isNull())
+        icon = QIcon::fromTheme(QStringLiteral("network-wireless"));
+    return icon;
 }
 
 class IconButton : public QToolButton
@@ -82,7 +92,6 @@ public:
                        .arg(percent)
                        .arg(charging ? QStringLiteral(" · charging") : QString()));
 
-        // Papirus panel icons: battery-000 … battery-100 (+ -charging).
         const int step = qBound(0, ((percent + 5) / 10) * 10, 100);
         QString name = QStringLiteral("battery-%1").arg(step, 3, 10, QLatin1Char('0'));
         if (charging)
@@ -119,16 +128,15 @@ public:
         , m_id(id)
     {
         setCursor(Qt::PointingHandCursor);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setFixedHeight(22);
         setActive(false);
     }
 
-    int id() const { return m_id; }
-
     void setActive(bool active)
     {
         m_active = active;
-        setFixedWidth(active ? 18 : 8);
+        setFixedWidth(active ? 22 : 10);
         update();
     }
 
@@ -138,9 +146,9 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(Qt::NoPen);
-        QColor c = m_active ? cream(230) : cream(underMouse() ? 180 : 70);
-        p.setBrush(c);
-        const qreal h = m_active ? 6.0 : 5.0;
+        const int a = m_active ? 245 : (underMouse() ? 200 : 170);
+        p.setBrush(QColor(255, 255, 255, a));
+        const qreal h = m_active ? 7.0 : 6.0;
         p.drawRoundedRect(QRectF(0, (height() - h) / 2.0, width(), h), h / 2.0, h / 2.0);
     }
 
@@ -149,74 +157,45 @@ private:
     bool m_active = false;
 };
 
-BarWindow::BarWindow(QWidget *parent)
-    : QWidget(parent)
+BarWindow::BarWindow(QObject *parent)
+    : QObject(parent)
 {
-    setWindowTitle(QStringLiteral("hypr-pills"));
-    setAttribute(Qt::WA_TranslucentBackground);
-    setAttribute(Qt::WA_TransparentForMouseEvents, false);
-    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
-    setFixedHeight(kBarHeight);
-
     m_hypr = new HyprlandClient(this);
     m_status = new StatusMonitor(this);
 
-    auto *root = new QHBoxLayout(this);
-    root->setContentsMargins(kMarginX, kMarginTop, kMarginX, kBarHeight - kMarginTop - kPillHeight);
-    root->setSpacing(0);
+    m_leftBar = new CornerBar(CornerBar::Edge::Left);
+    m_rightBar = new CornerBar(CornerBar::Edge::Right);
 
-    m_leftPill = new Pill(this);
-    m_leftPill->setFixedHeight(kPillHeight);
-    m_leftLayout = new QHBoxLayout(m_leftPill);
-    m_leftLayout->setContentsMargins(12, 0, 8, 0);
-    m_leftLayout->setSpacing(8);
-
-    auto *dotsHost = new QWidget(m_leftPill);
+    auto *dotsHost = new QWidget(m_leftBar->pill());
+    dotsHost->setObjectName(QStringLiteral("dotsHost"));
+    dotsHost->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     m_dotsLayout = new QHBoxLayout(dotsHost);
-    m_dotsLayout->setContentsMargins(0, 0, 0, 0);
-    m_dotsLayout->setSpacing(5);
+    m_dotsLayout->setContentsMargins(8, 0, 8, 0);
+    m_dotsLayout->setSpacing(10);
 
     m_launcherBtn = makeIconButton(QStringLiteral("app-launcher"), QStringLiteral("App launcher"));
-    m_launcherBtn->setToolTip({});
-    m_launcherBtn->installEventFilter(this);
-
-    m_leftLayout->addWidget(dotsHost);
-    m_leftLayout->addWidget(m_launcherBtn);
-
-    m_rightPill = new Pill(this);
-    m_rightPill->setFixedHeight(kPillHeight);
-    m_rightLayout = new QHBoxLayout(m_rightPill);
-    m_rightLayout->setContentsMargins(10, 0, 12, 0);
-    m_rightLayout->setSpacing(6);
+    m_leftBar->pillLayout()->addWidget(dotsHost, 0, Qt::AlignVCenter);
+    m_leftBar->pillLayout()->addWidget(m_launcherBtn, 0, Qt::AlignVCenter);
 
     m_powerBtn = makeIconButton(QStringLiteral("system-shutdown"), QStringLiteral("Power"));
-    m_powerBtn->setToolTip({});
-    m_powerBtn->installEventFilter(this);
-
-    m_battery = new BatteryBar(m_rightPill);
+    m_battery = new BatteryBar(m_rightBar->pill());
     m_wifiBtn = makeIconButton(QStringLiteral("network-wireless"), QStringLiteral("Wi-Fi"));
-    m_wifiBtn->setToolTip({});
-    m_wifiBtn->installEventFilter(this);
-
     m_btBtn = makeIconButton(QStringLiteral("bluetooth"), QStringLiteral("Bluetooth"));
-    m_btBtn->setToolTip({});
+
+    m_rightBar->pillLayout()->addWidget(m_powerBtn);
+    m_rightBar->pillLayout()->addWidget(m_battery);
+    m_rightBar->pillLayout()->addWidget(m_wifiBtn);
+    m_rightBar->pillLayout()->addWidget(m_btBtn);
+
+    m_launcherBtn->installEventFilter(this);
+    m_powerBtn->installEventFilter(this);
+    m_wifiBtn->installEventFilter(this);
     m_btBtn->installEventFilter(this);
-
-    m_rightLayout->addWidget(m_powerBtn);
-    m_rightLayout->addWidget(m_battery);
-    m_rightLayout->addWidget(m_wifiBtn);
-    m_rightLayout->addWidget(m_btBtn);
-
-    root->addWidget(m_leftPill, 0, Qt::AlignLeft | Qt::AlignTop);
-    root->addStretch(1);
-    root->addWidget(m_rightPill, 0, Qt::AlignRight | Qt::AlignTop);
 
     m_closeTimer = new QTimer(this);
     m_closeTimer->setSingleShot(true);
     m_closeTimer->setInterval(220);
     connect(m_closeTimer, &QTimer::timeout, this, [this]() {
-        // Do not consult QCursor::pos() here — on Wayland it stays stale once the
-        // pointer leaves our surfaces, which would keep menus open forever.
         if (m_wifiMenu->passwordPromptVisible())
             return;
         closeMenus();
@@ -227,7 +206,10 @@ BarWindow::BarWindow(QWidget *parent)
         m_status->powerAction(id);
         closeMenus();
     });
-    connect(m_powerMenu, &PowerStrip::hoverEntered, this, &BarWindow::cancelCloseMenus);
+    connect(m_powerMenu, &PowerStrip::hoverEntered, this, [this]() {
+        cancelCloseMenus();
+        m_rightBar->setHoldOpen(true);
+    });
     connect(m_powerMenu, &PowerStrip::hoverLeft, this, &BarWindow::scheduleCloseMenus);
 
     m_wifiMenu = new DropMenu(nullptr);
@@ -265,7 +247,6 @@ BarWindow::BarWindow(QWidget *parent)
             }
         }
 
-        // New network — ask for credentials.
         m_wifiMenu->showPasswordPrompt(ssid, id);
     });
     connect(m_wifiMenu, &DropMenu::passwordSubmitted, this,
@@ -297,7 +278,10 @@ BarWindow::BarWindow(QWidget *parent)
                 m_status->connectWifi(ssid, bssid, password, username, security);
             });
     connect(m_wifiMenu, &DropMenu::passwordCancelled, this, &BarWindow::rebuildWifiMenu);
-    connect(m_wifiMenu, &DropMenu::hoverEntered, this, &BarWindow::cancelCloseMenus);
+    connect(m_wifiMenu, &DropMenu::hoverEntered, this, [this]() {
+        cancelCloseMenus();
+        m_rightBar->setHoldOpen(true);
+    });
     connect(m_wifiMenu, &DropMenu::hoverLeft, this, &BarWindow::scheduleCloseMenus);
     connect(m_status, &StatusMonitor::wifiNetworksUpdated, this, &BarWindow::rebuildWifiMenu);
     connect(m_status, &StatusMonitor::wifiConnectFinished, this,
@@ -336,7 +320,10 @@ BarWindow::BarWindow(QWidget *parent)
             return;
         }
     });
-    connect(m_btMenu, &DropMenu::hoverEntered, this, &BarWindow::cancelCloseMenus);
+    connect(m_btMenu, &DropMenu::hoverEntered, this, [this]() {
+        cancelCloseMenus();
+        m_rightBar->setHoldOpen(true);
+    });
     connect(m_btMenu, &DropMenu::hoverLeft, this, &BarWindow::scheduleCloseMenus);
     connect(m_status, &StatusMonitor::bluetoothDevicesUpdated, this, &BarWindow::rebuildBluetoothMenu);
     connect(m_status, &StatusMonitor::bluetoothConnectFinished, this,
@@ -356,20 +343,33 @@ BarWindow::BarWindow(QWidget *parent)
         AppLauncher::launchById(id);
         closeMenus();
     });
-    connect(m_launcherMenu, &DropMenu::hoverEntered, this, &BarWindow::cancelCloseMenus);
+    connect(m_launcherMenu, &DropMenu::hoverEntered, this, [this]() {
+        cancelCloseMenus();
+        m_leftBar->setHoldOpen(true);
+    });
     connect(m_launcherMenu, &DropMenu::hoverLeft, this, &BarWindow::scheduleCloseMenus);
 
     connect(m_hypr, &HyprlandClient::changed, this, &BarWindow::rebuildWorkspaceDots);
     connect(m_status, &StatusMonitor::changed, this, &BarWindow::updateStatusUi);
+    connect(m_leftBar, &CornerBar::fullyRevealed, this, &BarWindow::flushPendingMenu);
+    connect(m_rightBar, &CornerBar::fullyRevealed, this, &BarWindow::flushPendingMenu);
 
     rebuildWorkspaceDots();
     updateStatusUi();
     rebuildLauncherMenu();
 }
 
+void BarWindow::show()
+{
+    m_leftBar->show();
+    m_rightBar->show();
+    m_leftBar->relayout();
+    m_rightBar->relayout();
+}
+
 QAbstractButton *BarWindow::makeIconButton(const QString &iconName, const QString &tooltip)
 {
-    auto *btn = new IconButton(iconName, this);
+    auto *btn = new IconButton(iconName);
     btn->setFixedSize(28, 28);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setToolTip(tooltip);
@@ -380,20 +380,32 @@ QAbstractButton *BarWindow::makeIconButton(const QString &iconName, const QStrin
 void BarWindow::rebuildWorkspaceDots()
 {
     while (QLayoutItem *item = m_dotsLayout->takeAt(0)) {
-        if (item->widget())
-            item->widget()->deleteLater();
+        if (QWidget *w = item->widget())
+            delete w;
         delete item;
     }
 
+    int dotsW = m_dotsLayout->contentsMargins().left() + m_dotsLayout->contentsMargins().right();
+    int count = 0;
     for (const WorkspaceInfo &ws : m_hypr->workspaces()) {
-        auto *dot = new WorkspaceDot(ws.id, m_leftPill);
+        auto *dot = new WorkspaceDot(ws.id);
         dot->setActive(ws.active);
         dot->setToolTip(QStringLiteral("Workspace %1").arg(ws.name));
         connect(dot, &QAbstractButton::clicked, this, [this, id = ws.id]() {
             m_hypr->focusWorkspace(id);
         });
         m_dotsLayout->addWidget(dot);
+        if (count++ > 0)
+            dotsW += m_dotsLayout->spacing();
+        // Use the fixed width we just applied — width() is reliable after setFixedWidth.
+        dotsW += dot->width();
     }
+
+    if (QWidget *host = m_dotsLayout->parentWidget())
+        host->setFixedSize(qMax(1, dotsW), 22);
+
+    // Defer relayout one tick so the pill layout sees the new fixed sizes.
+    QTimer::singleShot(0, this, [this]() { m_leftBar->relayout(); });
 }
 
 void BarWindow::updateStatusUi()
@@ -412,6 +424,8 @@ void BarWindow::updateStatusUi()
         m_wifiMenu->setToggleChecked(m_status->wifiOn());
     if (m_btMenu->isVisible())
         m_btMenu->setToggleChecked(m_status->bluetoothOn());
+
+    m_rightBar->relayout();
 }
 
 void BarWindow::rebuildWifiMenu()
@@ -420,11 +434,9 @@ void BarWindow::rebuildWifiMenu()
         return;
 
     m_wifiMenu->setToggleChecked(m_status->wifiOn());
-    m_wifiMenu->setBusy(m_status->wifiScanning());
+    m_wifiMenu->setBusy(m_status->wifiScanning() && m_wifiMenu->itemCount() == 0);
 
     if (m_status->wifiScanning()) {
-        // Keep the current list/status (e.g. "Connected") — don't jump to a
-        // scanning screen while a background rescan runs.
         if (m_wifiMenu->itemCount() == 0)
             m_wifiMenu->setStatusText(QStringLiteral("Scanning for networks…"));
         return;
@@ -443,15 +455,6 @@ void BarWindow::rebuildWifiMenu()
         return;
     }
 
-    auto signalQuality = [](int s) -> QString {
-        if (s >= 75)
-            return QStringLiteral("Excellent");
-        if (s >= 50)
-            return QStringLiteral("Good");
-        if (s >= 25)
-            return QStringLiteral("Fair");
-        return QStringLiteral("Weak");
-    };
     auto securityLabel = [](const QString &sec) -> QString {
         const QString t = sec.trimmed();
         if (t.isEmpty() || t == QLatin1String("--"))
@@ -461,12 +464,17 @@ void BarWindow::rebuildWifiMenu()
             return QStringLiteral("Enterprise");
         return t;
     };
+    auto isSecure = [](const QString &sec) -> bool {
+        const QString t = sec.trimmed();
+        return !(t.isEmpty() || t == QLatin1String("--")
+                 || t.contains(QLatin1String("open"), Qt::CaseInsensitive));
+    };
 
     bool anyConnected = false;
     for (const WifiNetwork &net : nets) {
         const QString id = net.bssid + QLatin1Char('\n') + net.ssid + QLatin1Char('\n') + net.security;
         QStringList bits;
-        bits << QStringLiteral("%1 · %2%").arg(signalQuality(net.signal)).arg(net.signal);
+        bits << QStringLiteral("%1%").arg(net.signal);
         bits << securityLabel(net.security);
         if (net.inUse) {
             bits << QStringLiteral("Connected");
@@ -474,9 +482,11 @@ void BarWindow::rebuildWifiMenu()
         } else if (net.saved) {
             bits << QStringLiteral("Saved");
         }
-        m_wifiMenu->addItem(id, net.ssid, bits.join(QStringLiteral("  ·  ")), net.inUse);
+        m_wifiMenu->addItem(id, net.ssid, bits.join(QStringLiteral("  ·  ")), net.inUse, {},
+                            wifiSignalIcon(net.signal, isSecure(net.security)));
     }
     m_wifiMenu->commitItems();
+    m_wifiMenu->setBusy(false);
     m_wifiMenu->setStatusText(anyConnected ? QStringLiteral("Connected")
                                            : QStringLiteral("%1 networks").arg(nets.size()));
 }
@@ -484,13 +494,15 @@ void BarWindow::rebuildWifiMenu()
 void BarWindow::rebuildBluetoothMenu()
 {
     m_btMenu->setToggleChecked(m_status->bluetoothOn());
-    m_btMenu->setBusy(m_status->bluetoothScanning());
-    m_btMenu->clearItems();
+    m_btMenu->setBusy(m_status->bluetoothScanning() && m_btMenu->itemCount() == 0);
 
     if (m_status->bluetoothScanning()) {
-        m_btMenu->setStatusText(QStringLiteral("Scanning for devices…"));
+        if (m_btMenu->itemCount() == 0)
+            m_btMenu->setStatusText(QStringLiteral("Scanning for devices…"));
         return;
     }
+
+    m_btMenu->clearItems();
 
     if (!m_status->bluetoothOn()) {
         m_btMenu->setStatusText(QStringLiteral("Bluetooth is off"));
@@ -515,6 +527,7 @@ void BarWindow::rebuildBluetoothMenu()
         m_btMenu->addItem(dev.address, dev.name, sub, dev.connected);
     }
     m_btMenu->commitItems();
+    m_btMenu->setBusy(false);
 }
 
 void BarWindow::rebuildLauncherMenu()
@@ -537,12 +550,85 @@ void BarWindow::rebuildLauncherMenu()
     m_launcherMenu->setBusy(false);
 }
 
+void BarWindow::syncHoldOpen()
+{
+    m_leftBar->setHoldOpen(m_openMenu == MenuKind::Launcher
+                           || m_pendingMenu == MenuKind::Launcher);
+    m_rightBar->setHoldOpen(m_openMenu == MenuKind::Power || m_openMenu == MenuKind::Wifi
+                            || m_openMenu == MenuKind::Bluetooth || m_pendingMenu == MenuKind::Power
+                            || m_pendingMenu == MenuKind::Wifi
+                            || m_pendingMenu == MenuKind::Bluetooth);
+}
+
+CornerBar *BarWindow::barForMenu(MenuKind kind) const
+{
+    return kind == MenuKind::Launcher ? m_leftBar : m_rightBar;
+}
+
+QAbstractButton *BarWindow::buttonForMenu(MenuKind kind) const
+{
+    switch (kind) {
+    case MenuKind::Power:
+        return m_powerBtn;
+    case MenuKind::Wifi:
+        return m_wifiBtn;
+    case MenuKind::Bluetooth:
+        return m_btBtn;
+    case MenuKind::Launcher:
+        return m_launcherBtn;
+    case MenuKind::None:
+        break;
+    }
+    return nullptr;
+}
+
+void BarWindow::requestMenu(MenuKind kind)
+{
+    if (kind == MenuKind::None)
+        return;
+
+    CornerBar *bar = barForMenu(kind);
+    if (!bar->revealed()) {
+        m_pendingMenu = kind;
+        syncHoldOpen();
+        bar->reveal();
+        return;
+    }
+
+    m_pendingMenu = MenuKind::None;
+    openMenu(kind);
+}
+
+void BarWindow::flushPendingMenu()
+{
+    if (m_pendingMenu == MenuKind::None)
+        return;
+
+    QAbstractButton *btn = buttonForMenu(m_pendingMenu);
+    // Only open if the pointer is still on that control (or its bar).
+    if (btn && (btn->underMouse() || barForMenu(m_pendingMenu)->revealed())) {
+        const MenuKind kind = m_pendingMenu;
+        m_pendingMenu = MenuKind::None;
+        // Require the triggering button to still be hovered so a drive-by
+        // reveal doesn't pop menus.
+        if (btn->underMouse())
+            openMenu(kind);
+        else
+            syncHoldOpen();
+        return;
+    }
+
+    m_pendingMenu = MenuKind::None;
+    syncHoldOpen();
+}
+
 void BarWindow::openMenu(MenuKind kind)
 {
     cancelCloseMenus();
     if (m_openMenu == kind)
         return;
 
+    // Always hard-hide the other menus. Incoming menus fade in (no slide).
     if (kind != MenuKind::Wifi)
         m_wifiMenu->hide();
     if (kind != MenuKind::Bluetooth)
@@ -553,22 +639,29 @@ void BarWindow::openMenu(MenuKind kind)
         m_launcherMenu->hide();
 
     m_openMenu = kind;
+    m_pendingMenu = MenuKind::None;
+    syncHoldOpen();
+
     switch (kind) {
     case MenuKind::Power:
+        m_rightBar->reveal();
         m_powerMenu->popupBelow(m_powerBtn);
         break;
     case MenuKind::Wifi:
+        m_rightBar->reveal();
         rebuildWifiMenu();
-        m_wifiMenu->popupBelow(m_wifiBtn);
+        m_wifiMenu->popupBelow(m_wifiBtn, DropMenu::Align::Right, true);
         m_status->scanWifi();
         break;
     case MenuKind::Bluetooth:
+        m_rightBar->reveal();
         rebuildBluetoothMenu();
-        m_btMenu->popupBelow(m_btBtn);
+        m_btMenu->popupBelow(m_btBtn, DropMenu::Align::Right, true);
         m_status->scanBluetooth();
         break;
     case MenuKind::Launcher:
-        m_launcherMenu->popupBelow(m_launcherBtn, DropMenu::Align::Left);
+        m_leftBar->reveal();
+        m_launcherMenu->popupBelow(m_launcherBtn, DropMenu::Align::Left, true);
         break;
     case MenuKind::None:
         break;
@@ -583,6 +676,8 @@ void BarWindow::closeMenus()
     m_btMenu->hide();
     m_launcherMenu->hide();
     m_openMenu = MenuKind::None;
+    m_pendingMenu = MenuKind::None;
+    syncHoldOpen();
 }
 
 void BarWindow::scheduleCloseMenus()
@@ -601,57 +696,21 @@ bool BarWindow::eventFilter(QObject *watched, QEvent *event)
         || watched == m_launcherBtn) {
         if (event->type() == QEvent::Enter) {
             if (watched == m_powerBtn)
-                openMenu(MenuKind::Power);
+                requestMenu(MenuKind::Power);
             else if (watched == m_wifiBtn)
-                openMenu(MenuKind::Wifi);
+                requestMenu(MenuKind::Wifi);
             else if (watched == m_btBtn)
-                openMenu(MenuKind::Bluetooth);
+                requestMenu(MenuKind::Bluetooth);
             else
-                openMenu(MenuKind::Launcher);
+                requestMenu(MenuKind::Launcher);
             return false;
         }
         if (event->type() == QEvent::Leave) {
+            if (m_pendingMenu != MenuKind::None && buttonForMenu(m_pendingMenu) == watched)
+                m_pendingMenu = MenuKind::None;
             scheduleCloseMenus();
             return false;
         }
     }
-    return QWidget::eventFilter(watched, event);
-}
-
-void BarWindow::setupLayerShell()
-{
-    if (m_layerReady)
-        return;
-
-    createWinId();
-    QWindow *win = windowHandle();
-    if (!win)
-        return;
-
-    auto *layer = LayerShellQt::Window::get(win);
-    if (!layer)
-        return;
-
-    layer->setLayer(LayerShellQt::Window::LayerTop);
-    layer->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop)
-                      | LayerShellQt::Window::AnchorLeft | LayerShellQt::Window::AnchorRight);
-    layer->setExclusiveZone(kBarHeight);
-    layer->setMargins(QMargins(0, 0, 0, 0));
-    layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
-    layer->setScope(QStringLiteral("hypr-pills"));
-    layer->setDesiredSize(QSize(0, kBarHeight));
-    m_layerReady = true;
-}
-
-void BarWindow::showEvent(QShowEvent *event)
-{
-    QWidget::showEvent(event);
-    setupLayerShell();
-    if (screen())
-        setFixedWidth(screen()->geometry().width());
-}
-
-void BarWindow::paintEvent(QPaintEvent *)
-{
-    // Fully transparent host; pills paint themselves.
+    return QObject::eventFilter(watched, event);
 }

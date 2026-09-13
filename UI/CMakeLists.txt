@@ -13,6 +13,8 @@ qt_add_executable(hypr-pills
   src/main.cpp
   src/barwindow.cpp
   src/barwindow.h
+  src/cornerbar.cpp
+  src/cornerbar.h
   src/pill.cpp
   src/pill.h
   src/hyprland.cpp

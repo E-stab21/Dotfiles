@@ -71,6 +71,7 @@ private:
     void finishBtScan();
     void loadSavedWifiProfiles();
     void tryAutoconnectSaved();
+    void checkCaptivePortal();
     QString connectionIdForSsid(const QString &ssid) const;
 
     int m_batteryPercent = 100;

@@ -2,7 +2,6 @@
 
 #include <QApplication>
 #include <QIcon>
-#include <QScreen>
 
 int main(int argc, char *argv[])
 {
@@ -13,8 +12,6 @@ int main(int argc, char *argv[])
     QIcon::setThemeName(QStringLiteral("Papirus-Dark"));
 
     BarWindow bar;
-    if (QScreen *screen = app.primaryScreen())
-        bar.setFixedWidth(screen->geometry().width());
     bar.show();
 
     return app.exec();

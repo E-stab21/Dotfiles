@@ -1,11 +1,13 @@
 #include "statusmonitor.h"
 
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QHash>
 #include <QProcess>
 #include <QSet>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -270,7 +272,10 @@ void StatusMonitor::tryAutoconnectSaved()
         refresh();
         // pendingAutoconnect is already false, so this refresh scan won't loop.
         scanWifi();
-        emit wifiConnectFinished(code == 0, wifiResultMessage(code == 0, QStringLiteral("Autoconnect failed")));
+        const bool ok = code == 0;
+        emit wifiConnectFinished(ok, wifiResultMessage(ok, QStringLiteral("Autoconnect failed")));
+        if (ok)
+            QTimer::singleShot(1800, this, &StatusMonitor::checkCaptivePortal);
     });
     proc->start(QStringLiteral("nmcli"),
                 {QStringLiteral("-w"), QStringLiteral("30"), QStringLiteral("connection"),
@@ -372,7 +377,12 @@ void StatusMonitor::connectWifi(const QString &ssid, const QString &bssid, const
         proc->deleteLater();
         refresh();
         scanWifi();
-        emit wifiConnectFinished(code == 0, wifiResultMessage(code == 0, QStringLiteral("Connection failed")));
+        const bool ok = code == 0;
+        emit wifiConnectFinished(ok, wifiResultMessage(ok, QStringLiteral("Connection failed")));
+        if (ok) {
+            // Portal detection lags association/DHCP by a moment.
+            QTimer::singleShot(1800, this, &StatusMonitor::checkCaptivePortal);
+        }
     });
 
     // Prefer activating an existing NetworkManager profile when no new secrets given.
@@ -475,6 +485,24 @@ void StatusMonitor::disconnectWifi()
     }
     refresh();
     scanWifi();
+}
+
+void StatusMonitor::checkCaptivePortal()
+{
+    auto *proc = new QProcess(this);
+    connect(proc, &QProcess::finished, this, [proc](int, QProcess::ExitStatus) {
+        const QString state = QString::fromUtf8(proc->readAllStandardOutput()).trimmed().toLower();
+        proc->deleteLater();
+        // NetworkManager: none | portal | limited | full | unknown
+        if (state != QLatin1String("portal"))
+            return;
+        // HTTP probe URL — the portal redirects the browser to its login page.
+        QDesktopServices::openUrl(
+            QUrl(QStringLiteral("http://detectportal.firefox.com/canonical.html")));
+    });
+    proc->start(QStringLiteral("nmcli"),
+                {QStringLiteral("networking"), QStringLiteral("connectivity"),
+                 QStringLiteral("check")});
 }
 
 void StatusMonitor::scanBluetooth()

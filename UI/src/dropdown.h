@@ -25,7 +25,7 @@ public:
     void setStatusText(const QString &text);
     void clearItems();
     void addItem(const QString &id, const QString &title, const QString &subtitle = {},
-                 bool active = false, const QIcon &icon = {});
+                 bool active = false, const QIcon &icon = {}, const QIcon &trailingIcon = {});
     void setToggleChecked(bool on);
     void setToggleVisible(bool visible);
     void setRefreshVisible(bool visible);
@@ -33,7 +33,8 @@ public:
     void setSearchVisible(bool visible);
     void setBusy(bool busy);
     void commitItems();
-    void popupBelow(QWidget *anchor, Align align = Align::Right);
+    void popupBelow(QWidget *anchor, Align align = Align::Right, bool quiet = false);
+    void softHide();
 
     void showPasswordPrompt(const QString &networkName, const QString &token);
     void hidePasswordPrompt();
@@ -67,6 +68,7 @@ private:
         QString subtitle;
         bool active = false;
         QIcon icon;
+        QIcon trailingIcon;
     };
 
     void ensureLayerShell(QScreen *screen);
@@ -74,6 +76,7 @@ private:
     void relayout();
     void submitPassword();
     void startSlideIn();
+    void startFadeIn();
     void appendRow(const StoredItem &item);
     void applySearchFilter();
     void activateCurrentItem();
@@ -100,6 +103,7 @@ private:
     QString m_passToken;
 
     QVariantAnimation *m_slide = nullptr;
+    QVariantAnimation *m_fade = nullptr;
     bool m_layerReady = false;
     QPoint m_targetPos;
     QPointer<QScreen> m_screen;

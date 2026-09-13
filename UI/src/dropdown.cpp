@@ -2,6 +2,7 @@
 
 #include <LayerShellQt/Window>
 
+#include <QAbstractAnimation>
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCursor>
@@ -17,11 +18,14 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QScrollBar>
 #include <QShowEvent>
+#include <QTimer>
 #include <QToolButton>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QWindow>
+#include <QEasingCurve>
 
 #include <algorithm>
 #include <utility>
@@ -45,8 +49,9 @@ void paintMatte(QWidget *w, qreal radius)
     const QRectF r = QRectF(w->rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     QPainterPath path;
     path.addRoundedRect(r, radius, radius);
-    p.fillPath(path, QColor(0x1a, 0x14, 0x10, 150));
-    p.setPen(QPen(cream(36), 1.0));
+    // Alpha low enough for Hyprland blur, high enough to stay readable.
+    p.fillPath(path, QColor(0x1a, 0x14, 0x10, 120));
+    p.setPen(QPen(cream(40), 1.0));
     p.drawPath(path);
 }
 
@@ -106,6 +111,30 @@ enum class MenuAlign {
     PillLeft,    // flush with the left edge of the pill
 };
 
+// Layer-shell margins are output-relative. Corner bars are tiny host windows, so
+// mapTo(host) is not a screen position — convert using the host's anchors.
+QPoint hostOriginOnScreen(QWidget *host)
+{
+    if (!host)
+        return {};
+
+    QScreen *screen = host->screen();
+    const int screenW = screen ? screen->geometry().width() : host->width();
+
+    if (QWindow *win = host->windowHandle()) {
+        if (auto *layer = LayerShellQt::Window::get(win)) {
+            const QMargins m = layer->margins();
+            const auto anchors = layer->anchors();
+            int x = m.left();
+            if (anchors.testFlag(LayerShellQt::Window::AnchorRight)
+                && !anchors.testFlag(LayerShellQt::Window::AnchorLeft))
+                x = screenW - m.right() - host->width();
+            return QPoint(x, m.top());
+        }
+    }
+    return {};
+}
+
 QPoint menuPos(QWidget *anchor, int menuWidth, MenuAlign align)
 {
     QWidget *host = anchor->window();
@@ -118,25 +147,26 @@ QPoint menuPos(QWidget *anchor, int menuWidth, MenuAlign align)
     const int bandRight = bandTL.x() + band->width();
     const int bandBottom = bandTL.y() + band->height();
 
-    int x = 0;
+    int localX = 0;
     switch (align) {
     case MenuAlign::UnderAnchor:
-        // Pin to the button itself (not the pill's right edge).
-        x = anchorTL.x() + (anchor->width() - menuWidth) / 2;
+        localX = anchorTL.x() + (anchor->width() - menuWidth) / 2;
         break;
     case MenuAlign::PillRight:
-        x = bandRight - menuWidth;
+        localX = bandRight - menuWidth;
         break;
     case MenuAlign::PillLeft:
-        x = bandTL.x();
+        localX = bandTL.x();
         break;
     }
+
+    const QPoint origin = hostOriginOnScreen(host);
+    int x = origin.x() + localX;
+    const int y = origin.y() + bandBottom + 6;
 
     if (QScreen *screen = host->screen() ? host->screen() : QApplication::screenAt(QCursor::pos()))
         x = qBound(8, x, screen->geometry().width() - menuWidth - 8);
 
-    // Small clear gap under the pill (exclusive zone ignored via -1).
-    const int y = bandBottom + 6;
     return QPoint(qMax(0, x), qMax(0, y));
 }
 
@@ -188,6 +218,38 @@ void placeOverlayFromRight(QWindow *win, int top, int rightMargin, const QSize &
                       | LayerShellQt::Window::AnchorRight);
     layer->setDesiredSize(size);
     layer->setMargins(QMargins(0, top, rightMargin, 0));
+}
+
+constexpr int kSlideFrom = -8;
+constexpr int kSlideMs = 220;
+
+void wireSoftSlide(QVariantAnimation *slide, QWidget *host, QWidget *chrome)
+{
+    // Opacity-led open: tiny Y travel avoids integer stair-steps on Wayland.
+    slide->setDuration(kSlideMs);
+    slide->setEasingCurve(QEasingCurve::OutCubic);
+    QObject::connect(slide, &QVariantAnimation::valueChanged, host, [host, chrome](const QVariant &v) {
+        const qreal t = v.toReal();
+        // Ease opacity faster than position so motion reads smoother.
+        qreal fade = t * 1.15;
+        if (fade > 1.0)
+            fade = 1.0;
+        chrome->move(0, qRound(kSlideFrom * (1.0 - t)));
+        if (QWindow *win = host->windowHandle())
+            win->setOpacity(fade);
+    });
+}
+
+void runSoftSlideIn(QVariantAnimation *slide, QWidget *host, QWidget *chrome)
+{
+    slide->stop();
+    chrome->move(0, kSlideFrom);
+    if (QWindow *win = host->windowHandle())
+        win->setOpacity(0.0);
+    slide->setDuration(kSlideMs);
+    slide->setStartValue(0.0);
+    slide->setEndValue(1.0);
+    slide->start();
 }
 
 // Subsequence fuzzy score; -1 = no match. Higher is better.
@@ -323,6 +385,7 @@ DropMenu::DropMenu(QWidget *parent)
         "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
         "QScrollBar::handle:vertical { background: rgba(255,255,255,55); border-radius: 4px; min-height: 24px; }"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"));
+    m_list->viewport()->installEventFilter(this);
     connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         if (!item || passwordPromptVisible())
             return;
@@ -396,11 +459,14 @@ DropMenu::DropMenu(QWidget *parent)
     root->addWidget(m_passPanel, 1);
 
     m_slide = new QVariantAnimation(this);
-    m_slide->setDuration(480);
-    m_slide->setEasingCurve(QEasingCurve::OutCubic);
-    connect(m_slide, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
-        m_chrome->move(0, v.toInt());
-        update();
+    wireSoftSlide(m_slide, this, m_chrome);
+
+    m_fade = new QVariantAnimation(this);
+    m_fade->setDuration(160);
+    m_fade->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_fade, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        if (QWindow *win = windowHandle())
+            win->setOpacity(v.toReal());
     });
 
     qApp->installEventFilter(this);
@@ -429,7 +495,8 @@ void DropMenu::appendRow(const StoredItem &data)
 
     constexpr int kRowW = 476;
     const bool hasIcon = !data.icon.isNull();
-    const int textW = kRowW - 24 - (hasIcon ? 36 : 0);
+    const bool hasTrail = !data.trailingIcon.isNull();
+    const int textW = kRowW - 24 - (hasIcon ? 36 : 0) - (hasTrail ? 32 : 0);
 
     auto *row = new QWidget(m_list);
     row->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -480,8 +547,17 @@ void DropMenu::appendRow(const StoredItem &data)
 
     lay->addWidget(textCol, 1);
 
+    if (hasTrail) {
+        auto *trailL = new QLabel(row);
+        trailL->setFixedSize(22, 22);
+        trailL->setAttribute(Qt::WA_TransparentForMouseEvents);
+        trailL->setPixmap(data.trailingIcon.pixmap(QSize(22, 22)));
+        lay->addWidget(trailL, 0, Qt::AlignVCenter);
+    }
+
+    const int glyphH = qMax(hasIcon ? 28 : 0, hasTrail ? 22 : 0);
     const int rowH =
-        10 + qMax(titleH + (data.subtitle.isEmpty() ? 0 : 4 + subH), hasIcon ? 28 : 0) + 10;
+        10 + qMax(titleH + (data.subtitle.isEmpty() ? 0 : 4 + subH), glyphH) + 10;
     item->setSizeHint(QSize(kRowW, qMax(rowH, 56)));
     m_list->addItem(item);
     m_list->setItemWidget(item, row);
@@ -491,12 +567,12 @@ void DropMenu::appendRow(const StoredItem &data)
 }
 
 void DropMenu::addItem(const QString &id, const QString &title, const QString &subtitle, bool active,
-                       const QIcon &icon)
+                       const QIcon &icon, const QIcon &trailingIcon)
 {
     if (passwordPromptVisible())
         return;
 
-    m_allItems.push_back(StoredItem{id, title, subtitle, active, icon});
+    m_allItems.push_back(StoredItem{id, title, subtitle, active, icon, trailingIcon});
 }
 
 void DropMenu::commitItems()
@@ -544,7 +620,8 @@ void DropMenu::applySearchFilter()
 
     if (m_list->count() > 0) {
         m_list->setCurrentRow(0);
-        m_list->scrollToItem(m_list->item(0));
+        if (QScrollBar *sb = m_list->verticalScrollBar())
+            sb->setValue(0);
     }
 }
 
@@ -578,9 +655,11 @@ void DropMenu::setKeyboardCapture(bool on)
     setAttribute(Qt::WA_ShowWithoutActivating, !on);
     if (auto *win = windowHandle()) {
         if (auto *layer = LayerShellQt::Window::get(win)) {
+            // Exclusive so Hyprland routes keys immediately without a click.
             layer->setKeyboardInteractivity(
-                on ? LayerShellQt::Window::KeyboardInteractivityOnDemand
+                on ? LayerShellQt::Window::KeyboardInteractivityExclusive
                    : LayerShellQt::Window::KeyboardInteractivityNone);
+            layer->setActivateOnShow(on);
         }
     }
     if (on) {
@@ -614,7 +693,9 @@ void DropMenu::setBusy(bool busy)
     if (passwordPromptVisible())
         return;
     m_refresh->setEnabled(!busy);
-    m_list->setEnabled(!busy);
+    // Keep an already-populated list interactive during background rescans so
+    // wifi/bt menus are scrollable as soon as they open.
+    m_list->setEnabled(!busy || !m_allItems.isEmpty());
     m_search->setEnabled(!busy);
 }
 
@@ -795,18 +876,61 @@ void DropMenu::placeOnLayer(const QPoint &topLeft, const QSize &size)
 
 void DropMenu::startSlideIn()
 {
-    m_slide->stop();
-    const int from = -qMin(56, height() / 2);
-    m_chrome->move(0, from);
-    m_slide->setStartValue(from);
-    m_slide->setEndValue(0);
-    m_slide->start();
+    m_fade->stop();
+    runSoftSlideIn(m_slide, this, m_chrome);
 }
 
-void DropMenu::popupBelow(QWidget *anchor, Align align)
+void DropMenu::startFadeIn()
+{
+    m_slide->stop();
+    m_chrome->move(0, 0);
+    if (QWindow *win = windowHandle())
+        win->setOpacity(0.0);
+    m_fade->stop();
+    m_fade->setDuration(200);
+    m_fade->setEasingCurve(QEasingCurve::OutCubic);
+    m_fade->setStartValue(0.0);
+    m_fade->setEndValue(1.0);
+    m_fade->start();
+}
+
+void DropMenu::softHide()
+{
+    if (!isVisible())
+        return;
+
+    m_slide->stop();
+    m_fade->stop();
+
+    qreal from = 1.0;
+    if (QWindow *win = windowHandle())
+        from = win->opacity();
+
+    // Fade out in-place; hide after a short delay matching the fade duration.
+    m_fade->setDuration(120);
+    m_fade->setStartValue(from);
+    m_fade->setEndValue(0.0);
+    m_fade->start();
+    QTimer::singleShot(140, this, [this]() {
+        if (isVisible() && (!windowHandle() || windowHandle()->opacity() < 0.05)) {
+            hide();
+            if (QWindow *win = windowHandle())
+                win->setOpacity(1.0);
+            m_chrome->move(0, 0);
+        }
+    });
+}
+
+void DropMenu::popupBelow(QWidget *anchor, Align align, bool quiet)
 {
     if (!anchor)
         return;
+    // Cancel any in-flight soft-hide so a reopen can't leave a ghost surface.
+    m_fade->stop();
+    m_slide->stop();
+    if (QWindow *win = windowHandle())
+        win->setOpacity(1.0);
+
     if (m_search->isVisible())
         m_search->clear();
     relayout();
@@ -814,17 +938,23 @@ void DropMenu::popupBelow(QWidget *anchor, Align align)
     m_targetPos = menuPos(anchor, width(),
                           align == Align::Left ? MenuAlign::PillLeft : MenuAlign::PillRight);
     placeOnLayer(m_targetPos, size());
+    if (QScrollBar *sb = m_list->verticalScrollBar())
+        sb->setValue(0);
+    if (m_list->count() > 0)
+        m_list->setCurrentRow(0);
     show();
     raise();
-    startSlideIn();
-    // Keep keyboard off until the search field is clicked — grabbing focus on
-    // hover-open breaks leave events with layer-shell.
+    if (quiet)
+        startFadeIn();
+    else
+        startSlideIn();
     if (m_search->isVisible()) {
-        setAttribute(Qt::WA_ShowWithoutActivating, true);
-        if (auto *win = windowHandle()) {
-            if (auto *layer = LayerShellQt::Window::get(win))
-                layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
-        }
+        setKeyboardCapture(true);
+        // Layer-shell keyboard + focus can settle one tick after show.
+        QTimer::singleShot(0, this, [this]() {
+            if (isVisible() && m_search->isVisible())
+                setKeyboardCapture(true);
+        });
     }
 }
 
@@ -895,6 +1025,16 @@ void DropMenu::keyPressEvent(QKeyEvent *event)
 
 bool DropMenu::eventFilter(QObject *watched, QEvent *event)
 {
+    // Ignore trackpad/wheel inertia while the open animation is still running
+    // so the list doesn't scroll the moment the menu appears.
+    if (event->type() == QEvent::Wheel && m_slide
+        && m_slide->state() == QAbstractAnimation::Running) {
+        if (watched == m_list || watched == m_list->viewport()
+            || (qobject_cast<QWidget *>(watched)
+                && (watched == this || isAncestorOf(static_cast<QWidget *>(watched)))))
+            return true;
+    }
+
     if (watched == m_search) {
         if (event->type() == QEvent::MouseButtonPress) {
             setKeyboardCapture(true);
@@ -961,12 +1101,7 @@ PowerStrip::PowerStrip(QWidget *parent)
     addGlyph(QStringLiteral("shutdown"), QStringLiteral("system-shutdown"), QStringLiteral("Shut down"));
 
     m_slide = new QVariantAnimation(this);
-    m_slide->setDuration(420);
-    m_slide->setEasingCurve(QEasingCurve::OutCubic);
-    connect(m_slide, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
-        m_chrome->move(0, v.toInt());
-        update();
-    });
+    wireSoftSlide(m_slide, this, m_chrome);
 }
 
 QAbstractButton *PowerStrip::addGlyph(const QString &id, const QString &iconName, const QString &tip)
@@ -1007,11 +1142,7 @@ void PowerStrip::placeOnLayer(const QPoint &topLeft, const QSize &size)
 
 void PowerStrip::startSlideIn()
 {
-    m_slide->stop();
-    m_chrome->move(0, -20);
-    m_slide->setStartValue(-20);
-    m_slide->setEndValue(0);
-    m_slide->start();
+    runSoftSlideIn(m_slide, this, m_chrome);
 }
 
 void PowerStrip::popupBelow(QWidget *anchor)
@@ -1031,11 +1162,10 @@ void PowerStrip::popupBelow(QWidget *anchor)
     while (band->parentWidget() && band->parentWidget() != host)
         band = band->parentWidget();
     const int bandBottom = band->mapTo(host, QPoint(0, band->height())).y();
-    const int top = bandBottom + 6;
 
-    // Left-anchor under the power button center (right-anchor + host width was
-    // wrong on scaled outputs and shoved the strip across the screen).
-    int x = anchorTL.x() + (anchor->width() - kW) / 2;
+    const QPoint origin = hostOriginOnScreen(host);
+    int x = origin.x() + anchorTL.x() + (anchor->width() - kW) / 2;
+    const int top = origin.y() + bandBottom + 6;
     if (QScreen *screen = m_screen ? m_screen.data() : QApplication::screenAt(QCursor::pos()))
         x = qBound(8, x, screen->geometry().width() - kW - 8);
 
