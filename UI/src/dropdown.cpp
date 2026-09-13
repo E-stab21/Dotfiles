@@ -330,8 +330,8 @@ DropMenu::DropMenu(QWidget *parent)
         "QToolButton { color: #ffffff; background: rgba(255,255,255,18);"
         " border: 1px solid rgba(255,255,255,28); border-radius: 11px; padding: 4px 12px;"
         " font-size: 12px; }"
-        "QToolButton:checked { color: #ffffff; background: rgba(255,255,255,40);"
-        " border-color: rgba(255,255,255,60); }"));
+        "QToolButton:checked { color: #111111; background: #ffffff;"
+        " border-color: #ffffff; }"));
     connect(m_toggle, &QToolButton::clicked, this, [this](bool on) {
         m_toggle->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
         emit toggleRequested(on);
