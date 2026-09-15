@@ -19,13 +19,28 @@
 namespace {
 
 constexpr int kBarHeight = 44;
-constexpr int kPillHeight = 34;
-constexpr int kMarginTop = 4;
+constexpr int kTabHeight = 34;
 constexpr int kPeekH = 4;
-constexpr int kRevealMs = 280;
+constexpr int kRevealMs = 420;
+constexpr int kHideMs = 340;
 constexpr int kHideDelayMs = 380;
 constexpr int kSideMargin = 14;
 constexpr int kMinWidth = 160;
+
+QEasingCurve revealCurve()
+{
+    // Soft ease-out: quick start, long gentle settle (avoids the cubic "hit").
+    QEasingCurve c(QEasingCurve::BezierSpline);
+    c.addCubicBezierSegment(QPointF(0.16, 1.0), QPointF(0.3, 1.0), QPointF(1.0, 1.0));
+    return c;
+}
+
+QEasingCurve hideCurve()
+{
+    QEasingCurve c(QEasingCurve::BezierSpline);
+    c.addCubicBezierSegment(QPointF(0.4, 0.0), QPointF(0.7, 0.0), QPointF(1.0, 1.0));
+    return c;
+}
 
 } // namespace
 
@@ -47,7 +62,7 @@ CornerBar::CornerBar(Edge edge, QWidget *parent)
     m_peek->installEventFilter(this);
 
     m_pill = new Pill(this);
-    m_pill->setFixedHeight(kPillHeight);
+    m_pill->setFixedHeight(kTabHeight);
     m_pill->setMouseTracking(true);
     m_pill->installEventFilter(this);
     m_pillLayout = new QHBoxLayout(m_pill);
@@ -56,7 +71,7 @@ CornerBar::CornerBar(Edge edge, QWidget *parent)
 
     m_anim = new QVariantAnimation(this);
     m_anim->setDuration(kRevealMs);
-    m_anim->setEasingCurve(QEasingCurve::OutCubic);
+    m_anim->setEasingCurve(revealCurve());
     connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
         m_reveal = v.toReal();
         applyReveal();
@@ -91,6 +106,8 @@ void CornerBar::reveal()
     if (m_reveal >= 0.999 && m_anim->state() != QAbstractAnimation::Running)
         return;
     m_anim->stop();
+    m_anim->setDuration(kRevealMs);
+    m_anim->setEasingCurve(revealCurve());
     m_anim->setStartValue(m_reveal);
     m_anim->setEndValue(1.0);
     m_anim->start();
@@ -117,6 +134,8 @@ void CornerBar::hideNow()
     if (m_reveal <= 0.001 && m_anim->state() != QAbstractAnimation::Running)
         return;
     m_anim->stop();
+    m_anim->setDuration(kHideMs);
+    m_anim->setEasingCurve(hideCurve());
     m_anim->setStartValue(m_reveal);
     m_anim->setEndValue(0.0);
     m_anim->start();
@@ -126,7 +145,7 @@ void CornerBar::relayout()
 {
     m_pill->setMinimumWidth(0);
     m_pill->setMaximumWidth(QWIDGETSIZE_MAX);
-    m_pill->setFixedHeight(kPillHeight);
+    m_pill->setFixedHeight(kTabHeight);
 
     m_pillLayout->invalidate();
     m_pillLayout->activate();
@@ -140,7 +159,6 @@ void CornerBar::relayout()
             continue;
         if (visibleChildren++ > 0)
             contentW += m_pillLayout->spacing();
-        // Prefer the widget's actual width when already fixed (dots host / buttons).
         const int childW = qMax(w->width(),
                                 qMax(w->minimumWidth(),
                                      qMax(w->minimumSizeHint().width(), w->sizeHint().width())));
@@ -152,6 +170,7 @@ void CornerBar::relayout()
     const int hostW = qMax(kMinWidth, pillW);
     if (width() != hostW)
         setFixedWidth(hostW);
+    setFixedHeight(kBarHeight);
 
     if (auto *win = windowHandle()) {
         if (auto *layer = LayerShellQt::Window::get(win))
@@ -163,12 +182,13 @@ void CornerBar::relayout()
 
 int CornerBar::hiddenY() const
 {
-    return -(kPillHeight + 6);
+    return -(kTabHeight - kPeekH);
 }
 
 int CornerBar::shownY() const
 {
-    return kMarginTop;
+    // Flush with the top of the screen (host is already top-anchored).
+    return 0;
 }
 
 void CornerBar::applyReveal()
@@ -202,6 +222,7 @@ void CornerBar::setupLayerShell()
     if (m_edge == Edge::Left) {
         layer->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop)
                           | LayerShellQt::Window::AnchorLeft);
+        // Flush to the top edge; keep a small side inset from the corners.
         layer->setMargins(QMargins(kSideMargin, 0, 0, 0));
         layer->setScope(QStringLiteral("hypr-pills-left"));
     } else {
@@ -256,7 +277,7 @@ void CornerBar::leaveEvent(QEvent *event)
 
 bool CornerBar::eventFilter(QObject *watched, QEvent *event)
 {
-    // Keep the bar revealed while moving between peek / pill / buttons.
+    // Keep the bar revealed while moving between peek / tab / buttons.
     if (watched == m_peek || watched == m_pill
         || m_pill->isAncestorOf(qobject_cast<QWidget *>(watched))) {
         if (event->type() == QEvent::Enter) {

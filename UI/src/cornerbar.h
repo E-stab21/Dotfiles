@@ -9,8 +9,8 @@ class QTimer;
 class QResizeEvent;
 class QShowEvent;
 
-// One auto-hiding corner pill as its own layer-shell surface (no full-width
-// mask). Hover the top edge to drop it; leave to retract.
+// One auto-hiding top tab as its own layer-shell surface. Hover the top
+// edge to drop it; leave to retract. Top edge is flush with the screen.
 class CornerBar : public QWidget
 {
     Q_OBJECT

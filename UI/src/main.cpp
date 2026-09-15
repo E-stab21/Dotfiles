@@ -1,10 +1,12 @@
 #include "barwindow.h"
+#include "toast.h"
 
 #include <QApplication>
 #include <QIcon>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QTimer>
+#include <QDebug>
 
 #include <unistd.h>
 
@@ -75,6 +77,10 @@ int main(int argc, char *argv[])
         while (QLocalSocket *client = server.nextPendingConnection())
             handleClient(client, &bar);
     });
+
+    ToastService toasts;
+    if (!toasts.start())
+        qWarning("hypr-pills: could not claim org.freedesktop.Notifications");
 
     bar.show();
     if (wantLauncher)
